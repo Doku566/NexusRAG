@@ -35,31 +35,28 @@ class SearchResult(BaseModel):
 async def load_index():
     print("Loading Index...")
     # Simulate loading 10k vectors
-    # In C++, adding is fast, but let's do it to show it works
-    # This runs in main thread, but startup is once.
     for i in range(1000):
-        # Random vector
         vec = [random.random() for _ in range(DIMENSION)]
         index.add_item(i, vec)
     print("Index Loaded with 1000 vectors.")
+
+# Dedicated thread pool for CPU-bound C++ tasks
+# Setting max_workers to CPU count * 2 to ensure we saturate cores even if some slight IO overhead exists
+import multiprocessing
+from concurrent.futures import ThreadPoolExecutor
+executor = ThreadPoolExecutor(max_workers=multiprocessing.cpu_count() * 2)
 
 @app.post("/search", response_model=List[SearchResult])
 async def search_vectors(payload: SearchRequest):
     if len(payload.query) != DIMENSION:
         raise HTTPException(status_code=400, detail="Invalid dimension")
     
-    # CRITICAL: This call calls C++. 
-    # Because we used `py::call_guard<py::gil_scoped_release>()`,
-    # functionality inside `search` will NOT block other Python threads.
-    # To truly benefit in FastAPI, we should run this in a threadpool 
-    # if it blocks the *event loop*, but since it releases GIL, 
-    # standard python threads (like those in uvicorn workers or run_in_executor) thrive.
-    
-    # Using run_in_executor to ensure the main event loop isn't blocked 
-    # by the C++ computation time (even if GIL is free, the thread is busy).
+    # Offload the pure C++ computation to our thread pool.
+    # Since index.search() releases the GIL, these threads will run in parallel 
+    # on physical cores, while the main AsyncIO loop handles HTTP traffic.
     loop = asyncio.get_running_loop()
     results = await loop.run_in_executor(
-        None, 
+        executor, 
         lambda: index.search(payload.query, payload.k)
     )
     
