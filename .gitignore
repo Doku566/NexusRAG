@@ -1,0 +1,6 @@
+__pycache__/
+nexus_core/build/
+*.so
+*.pyd
+.pytest_cache/
+.vscode/
