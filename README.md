@@ -1,32 +1,35 @@
-# NexusRAG: High-Performance Technical Support Intelligence
+# NexusRAG: High-Concurrency Vector Retrieval Engine
 
-![FastAPI](https://img.shields.io/badge/FastAPI-0.95-green.svg) ![C++](https://img.shields.io/badge/C++-17-blue.svg) ![Docker](https://img.shields.io/badge/Docker-Compose-blue.svg)
+`NexusRAG` is a microservices-based retrieval system that offloads vector computations to a C++ extension to bypass the CPython Global Interpreter Lock (GIL). It is designed to maintain high HTTP throughput in FastAPI even under heavy CPU load from similarity searches.
 
-**NexusRAG** es una plataforma de "Retrieval-Augmented Generation" diseñada para escalar a millones de documentos técnicos. Se diferencia de las soluciones estándar (LangChain puro) al implementar su propio motor de búsqueda vectorial en **C++ nativo**, optimizado para alta concurrencia.
+## Design Decisions
 
-## 🏛️ Arquitectura
+### 1. Releasing the GIL (Async-Bridge)
+The core design constraint was Python's GIL, which serializes CPU-bound tasks.
+-   **Why**: A standard `numpy` dot product blocks the main thread. In an async server like FastAPI (`uvicorn`), this pauses the Event Loop, blocking heartbeats and incoming requests.
+-   **Implementation**: The `search` function in `src/bindings.cpp` utilizes `py::call_guard<py::gil_scoped_release>()`. This explicitly drops the lock, allowing the OS scheduler to run the C++ search thread in parallel with Python I/O threads.
 
-El sistema sigue un diseño de microservicios:
-*   **Vector Engine (`nexus_core`)**: Módulo C++ compilado con `pybind11`. Gestiona el índice en memoria y realiza búsquedas de vecinos más cercanos (k-NN).
-*   **API Gateway (`nexus_api`)**: Servicio FastAPI asíncrono. Delega la computación pesada al motor C++ mediante un ThreadPool.
-*   **Storage**: PostgreSQL para metadatos y Redis para caché de queries frecuentes.
+### 2. ThreadPool Execution
+The FastAPI application explicitly uses a `ThreadPoolExecutor` (sized to $2 \times$ Cores) to schedule these non-blocking C++ tasks. This prevents `asyncio` from accidentally running them in the main thread.
 
-## 🚀 Retos Técnicos Superados
+## Trade-offs and Limitations
 
-### Bypassing the GIL (Global Interpreter Lock)
-En Python, el GIL impide que múltiples hilos ejecuten bytecodes simultáneamente, lo que hace que las tareas CPU-intensive bloqueen el servidor web.
-*   **Solución**: En los bindings de C++ (`bindings.cpp`), utilizo `py::call_guard<py::gil_scoped_release>()`. Esto libera explícitamente el GIL antes de entrar en el bucle de búsqueda vectorial (`compute_l2_sq`).
-*   **Resultado**: El servidor FastAPI puede manejar cientos de requests concurrentes; mientras un hilo espera el resultado de C++, otros hilos pueden procesar I/O o nuevas peticiones, logrando un paralelismo real en multicore.
+*   **Brute Force Index**: The current `VectorIndex` uses linear scan ($O(N)$). While efficient with SIMD for $N < 100k$, it is essentially a placeholder for an HNSW (Hierarchical Navigable Small World) graph.
+*   **Memory Usage**: Vectors are stored in RAM (std::vector). There is no quantization (PQ) or memory mapping (mmap), limiting the dataset size to physical RAM.
+*   **Build Complexity**: Requires compiling C++ extensions. This complicates the CI/CD pipeline compared to a pure Python solution.
 
-## 📊 Análisis de Complejidad Computacional
+## Current Status
 
-### Búsqueda Vectorial
-Para un índice de tamaño $N$ y dimensión $D$:
-*   **Brute Force (Baseline implementado)**: $O(N \cdot D)$. Con SIMD (AVX2), procesamos 8 floats por ciclo.
-*   **HNSW (Planned Production)**: $O(\log N \cdot D)$. La estructura de grafo jerárquico permite "saltar" rápidamente hacia la vecindad del query.
+-   [x] **C++ Core**: `VectorIndex` implemented with multithreading support.
+-   [x] **GIL Release**: Bindings configured correctly for true parallelism.
+-   [x] **Infrastructure**: Docker Compose orchestration operational.
+-   [x] **Verification**: `stress_test.py` proves Concurrency Factor > 1.5x on multicore systems.
+-   [ ] **Indexing Algorithm**: HNSW implementation is currently pending (Roadmap).
 
-## 🛠️ Build & Run
-```bash
-docker-compose up --build
-```
-El servicio estará disponible en `http://localhost:8000/docs`.
+## Complexity Analysis
+
+| Operation | Complexity | Description |
+| :--- | :--- | :--- |
+| **Search (Current)** | $O(N \cdot D)$ | Linearly scans all $N$ vectors of dimension $D$. |
+| **Search (Target)** | $O(\log N)$ | HNSW graph traversal (Planned). |
+| **Concurrency** | $Scales \approx Cores$ | Restricted only by Memory Bandwidth after GIL release. |
