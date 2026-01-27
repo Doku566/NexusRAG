@@ -22,3 +22,11 @@ The C++ extension (`nexus_core`) acts as the compute offloader.
 1.  **No HNSW (Yet)**: The search is currently a linear loop. I prioritized the *architecture* (Async Bridge) over the *algorithm* (Graph Index) for this iteration.
 2.  **No Persistence**: The index implementation is in-memory only. If the container restarts, the index is lost. A production version would require mmap support (e.g., loading faiss indices).
 3.  **Build Complexity**: Docker builds take significantly longer (approx 2m) due to compiling the C++ extension from source, compared to a pure Python install.
+
+## Future Roadmap (V2)
+- [ ] Implement HNSW Indexing (replacing O(N) scan).
+- [ ] Add Persistence (Disk/MMap).
+- [ ] GPU Offloading via CUDA.
+
+## Maintenance Log
+- **[2026-01-16]**: Initial project structure validated. Stress tests passed for concurrent request handling.
